@@ -6,7 +6,7 @@ const express = require("express");
 const app = express();
 const port = process.env.PORT || 3000;
 
-app.get("/", (_req, res) => res.send("✅ Bot běží a odpovídá"));
+app.get("/", (req, res) => res.status(200).send("✅ Bot běží"));
 app.listen(port, () => console.log(`🌐 Webserver běží na portu ${port}`));
 
 // ===== DISCORD.JS =====
