@@ -1,14 +1,6 @@
 // ====== ZÁKLAD ======
 require("dotenv").config();
 const express = require("express");
-const app = express();
-
-app.get("/", (req, res) => {
-  res.send("✅ editorfarcik.eu bot běží 24/7");
-});
-
-app.listen(3000, () => console.log("🌐 Webserver běží na portu 3000"));
-
 const {
   Client,
   GatewayIntentBits,
@@ -25,13 +17,14 @@ const {
   PermissionsBitField,
 } = require("discord.js");
 
+// ====== DISCORD CLIENT ======
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.DirectMessages
+    GatewayIntentBits.DirectMessages,
   ],
   partials: [Partials.Channel, Partials.Message, Partials.GuildMember],
 });
@@ -61,7 +54,9 @@ client.on("messageCreate", async (msg) => {
     if (msg.content.toLowerCase() === "!ping") {
       await msg.reply("🏓 Pong!");
     }
-  } catch { }
+  } catch (err) {
+    console.error("ping error:", err);
+  }
 });
 
 // ====== !ticket-panel ======
@@ -80,7 +75,9 @@ client.on("messageCreate", async (msg) => {
     const embed = new EmbedBuilder()
       .setColor("#ff4f8b")
       .setTitle("🎟️ Objednávky")
-      .setDescription("Vyber typ ticketu.\n\n*⚠️ Tento systém je určen pro objednávky a dotazy ohledně editů.*")
+      .setDescription(
+        "Vyber typ ticketu.\n\n*⚠️ Tento systém je určen pro objednávky a dotazy ohledně editů.*"
+      )
       .setFooter({ text: "editorfarcik.eu | Podpora ticketu" });
 
     const menu = new StringSelectMenuBuilder()
@@ -89,11 +86,10 @@ client.on("messageCreate", async (msg) => {
       .addOptions(
         { label: "🎬 Objednávka editu", description: "Chci objednat edit.", value: "order" },
         { label: "🤝 Spolupráce", description: "Mám zájem o spolupráci.", value: "collab" },
-        { label: "💬 Dotaz / poradenství", description: "Potřebuji poradit.", value: "question" },
+        { label: "💬 Dotaz / poradenství", description: "Potřebuji poradit.", value: "question" }
       );
 
     const row = new ActionRowBuilder().addComponents(menu);
-
     await panelChannel.send({ embeds: [embed], components: [row] });
     await msg.reply("✅ Ticket panel byl odeslán.");
   } catch (err) {
@@ -146,7 +142,7 @@ client.on("interactionCreate", async (interaction) => {
     modal.addComponents(
       new ActionRowBuilder().addComponents(name),
       new ActionRowBuilder().addComponents(details),
-      new ActionRowBuilder().addComponents(contact),
+      new ActionRowBuilder().addComponents(contact)
     );
 
     await interaction.showModal(modal);
@@ -165,8 +161,8 @@ client.on("interactionCreate", async (interaction) => {
     if (!interaction.customId.startsWith("ticket_form_")) return;
 
     const type = interaction.customId.replace("ticket_form_", "");
-    const guild = client.guilds.cache.get(GUILD_ID) || await client.guilds.fetch(GUILD_ID);
-    const category = guild.channels.cache.get(TICKET_CATEGORY_ID) || await guild.channels.fetch(TICKET_CATEGORY_ID);
+    const guild = client.guilds.cache.get(GUILD_ID) || (await client.guilds.fetch(GUILD_ID));
+    const category = guild.channels.cache.get(TICKET_CATEGORY_ID) || (await guild.channels.fetch(TICKET_CATEGORY_ID));
 
     if (!category) {
       return interaction.reply({ content: "❌ Kategorie pro tickety nebyla nalezena.", flags: 64 });
@@ -191,7 +187,7 @@ client.on("interactionCreate", async (interaction) => {
         { id: guild.roles.everyone, deny: [PermissionsBitField.Flags.ViewChannel] },
         { id: interaction.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] },
         { id: client.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] },
-        ...SUPPORT_ROLES.map(rid => ({
+        ...SUPPORT_ROLES.map((rid) => ({
           id: rid,
           allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages],
         })),
@@ -201,12 +197,14 @@ client.on("interactionCreate", async (interaction) => {
     const embed = new EmbedBuilder()
       .setColor("#ff4f8b")
       .setTitle("🎟️ Nový ticket")
-      .setDescription(`**Kategorie:** ${t.text}\n**Uživatel:** ${interaction.user}\n\n> **Jméno:** ${name}\n> **Kontakt:** ${contact}\n> **Detail:** ${details}`)
+      .setDescription(
+        `**Kategorie:** ${t.text}\n**Uživatel:** ${interaction.user}\n\n> **Jméno:** ${name}\n> **Kontakt:** ${contact}\n> **Detail:** ${details}`
+      )
       .setFooter({ text: "editorfarcik.eu | Podpora ticketu" });
 
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("take_ticket").setLabel("✅ Převzít").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId("close_ticket").setLabel("🔒 Zavřít ticket").setStyle(ButtonStyle.Danger),
+      new ButtonBuilder().setCustomId("close_ticket").setLabel("🔒 Zavřít ticket").setStyle(ButtonStyle.Danger)
     );
 
     await chan.send({ content: `<@${interaction.user.id}>`, embeds: [embed], components: [row] });
@@ -225,7 +223,7 @@ client.on("interactionCreate", async (interaction) => {
     if (!interaction.isButton()) return;
 
     if (interaction.customId === "take_ticket") {
-      const can = SUPPORT_ROLES.some(r => interaction.member?.roles?.cache?.has(r));
+      const can = SUPPORT_ROLES.some((r) => interaction.member?.roles?.cache?.has(r));
       if (!can) return interaction.reply({ content: "❌ Nemáš oprávnění převzít tento ticket.", flags: 64 });
 
       const current = activeTickets.get(interaction.channel.id);
@@ -252,3 +250,15 @@ client.on("interactionCreate", async (interaction) => {
 
 // ====== LOGIN ======
 client.login(process.env.TOKEN);
+
+// ====== WEB SERVER (Render + UptimeRobot) ======
+const app = express();
+const port = process.env.PORT || 3000;
+
+app.get("/", (req, res) => {
+  res.send("✅ Bot běží a odpovídá");
+});
+
+app.listen(port, () => {
+  console.log(`🌐 Webserver běží na portu ${port}`);
+});
