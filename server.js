@@ -1,12 +1,12 @@
 // server.js — editorfarcik.eu bot (Discord.js v14)
 
-// ===== ZÁKLAD + KEEP-ALIVE =====
+// ===== ZÁKLAD + KEEP-ALIVE (Render/UptimeRobot) =====
 require("dotenv").config();
 const express = require("express");
 const app = express();
 const port = process.env.PORT || 3000;
 
-app.get("/", (req, res) => res.status(200).send("✅ Bot běží"));
+app.get("/", (_req, res) => res.status(200).send("✅ editorfarcik.eu bot běží."));
 app.listen(port, () => console.log(`🌐 Webserver běží na portu ${port}`));
 
 // ===== DISCORD.JS =====
@@ -18,47 +18,75 @@ const {
   PermissionsBitField, ChannelType, time, userMention, roleMention
 } = require("discord.js");
 
-// ====== KONSTANTY (ID) ======
+// ====== ID KONSTANTY ======
 const COLOR = 0xff4f8b; // růžová
-const MODLOG_CHANNEL_ID = "1430647278741229840";
-const DISCORD_INFO_CHANNEL_ID = "1429033865829290016";
-const TICKET_PANEL_CHANNEL_ID = "1429485456667443220";
-const TICKET_CATEGORY_ID = "1429032923469713510";
-const WELCOME_CHANNEL_ID = "1429032923469713511";
-const SUPPORT_ROLES = ["1429036050260426855","1432327929244942356","1430295218074419211"];
-const BONUS_ROLES = ["1429473348513169651","1429037670386106428"];
 
-const GUILD_ID = process.env.GUILD_ID;
+// Kanály
+const MODLOG_CHANNEL_ID        = "1430647278741229840"; // logy moderace
+const RULES_CHANNEL_ID         = "1429033865829290016"; // /pravidla cíl
+const FAQ_CHANNEL_ID           = "1429485626864173227"; // /faq cíl
+const TICKET_PANEL_CHANNEL_ID  = "1429485456667443220"; // kam posílá !ticket-panel
+const TICKET_CATEGORY_ID       = "1429032923469713510"; // běžné tickety (objednávky)
+const WELCOME_CHANNEL_ID       = "1429032923469713511"; // vítej
+const WARN_PRIVATE_CATEGORY_ID = "1430626033241030717"; // privátní varování/appeal kategorie
+
+// Role
+const SUPPORT_ROLES = [
+  "1429036050260426855",
+  "1432327929244942356",
+  "1430295218074419211",
+];
+const BONUS_ROLES = [ // 2x šance ve giveaway
+  "1429473348513169651",
+  "1429037670386106428"
+];
+
+// Emoji (custom reakce na pravidlech)
+const RULES_REACT_EMOJI = "<:ano:1432781271100035203>";
+
+// ENV
+const GUILD_ID  = process.env.GUILD_ID;
 const CLIENT_ID = process.env.CLIENT_ID;
-const TOKEN = process.env.TOKEN;
+const TOKEN     = process.env.TOKEN;
 
-// ====== POMOCNÉ FUNKCE ======
-const hasSomeRole = (member, ids) => ids.some(id => member.roles.cache.has(id));
+// ====== HELPERS ======
 const pink = () => new EmbedBuilder().setColor(COLOR);
-const logEmbed = async (guild, embed) => {
-  const ch = guild.channels.cache.get(MODLOG_CHANNEL_ID) || await guild.channels.fetch(MODLOG_CHANNEL_ID).catch(()=>null);
-  if (ch) ch.send({ embeds: [embed.setTimestamp()] }).catch(()=>{});
-};
+const hasSomeRole = (member, ids) => ids.some(id => member.roles.cache.has(id));
 
-// d: "1h", "30m", "10s", "2d"
-const parseDuration = (str) => {
+async function sendToModlog(guild, embed) {
+  try {
+    const ch = guild.channels.cache.get(MODLOG_CHANNEL_ID) || await guild.channels.fetch(MODLOG_CHANNEL_ID).catch(()=>null);
+    if (ch) await ch.send({ embeds: [embed.setTimestamp()] });
+  } catch {}
+}
+
+// Kompozitní duration: "1d 3h 25m"
+function parseCompoundDuration(str) {
   if (!str) return null;
-  const m = String(str).trim().match(/^(\d+)\s*([smhd])$/i);
-  if (!m) return null;
-  const n = Number(m[1]);
-  const k = m[2].toLowerCase();
-  const mult = k === "s" ? 1 : k === "m" ? 60 : k === "h" ? 3600 : 86400;
-  return n * mult * 1000;
-};
+  let totalSec = 0;
+  const re = /(\d+)\s*(d|h|m|s)/gi;
+  let m;
+  while ((m = re.exec(str)) !== null) {
+    const n = Number(m[1]);
+    const u = m[2].toLowerCase();
+    if (u === "d") totalSec += n * 86400;
+    else if (u === "h") totalSec += n * 3600;
+    else if (u === "m") totalSec += n * 60;
+    else if (u === "s") totalSec += n;
+  }
+  return totalSec > 0 ? totalSec * 1000 : null;
+}
 const fmtMs = (ms) => {
-  const s = Math.floor(ms/1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s/60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m/60);
-  if (h < 24) return `${h}h`;
-  const d = Math.floor(h/24);
-  return `${d}d`;
+  let s = Math.floor(ms/1000);
+  const d = Math.floor(s/86400); s -= d*86400;
+  const h = Math.floor(s/3600);  s -= h*3600;
+  const m = Math.floor(s/60);    s -= m*60;
+  const parts = [];
+  if (d) parts.push(`${d}d`);
+  if (h) parts.push(`${h}h`);
+  if (m) parts.push(`${m}m`);
+  if (s) parts.push(`${s}s`);
+  return parts.join(" ") || "0s";
 };
 
 // ====== CLIENT ======
@@ -73,8 +101,9 @@ const client = new Client({
   partials: [Partials.Channel, Partials.Message, Partials.GuildMember, Partials.User],
 });
 
-// ====== REGISTRACE SLASH ======
+// ====== REGISTRACE SLASH PŘÍKAZŮ ======
 const commands = [
+  // Moderace (role-gate)
   {
     name: "ban",
     description: "Trvalý ban uživatele",
@@ -90,7 +119,7 @@ const commands = [
     default_member_permissions: "0",
     options: [
       { name: "uživatel", type: 6, required: true, description: "Koho zabanovat" },
-      { name: "doba", type: 3, required: true, description: "Např. 30m / 2h / 1d" },
+      { name: "doba", type: 3, required: true, description: "Např. 1d 3h 25m / 2h / 30m" },
       { name: "důvod", type: 3, required: false, description: "Důvod" }
     ]
   },
@@ -105,30 +134,22 @@ const commands = [
   },
   {
     name: "mute",
-    description: "Tichý timeout (max 28 dní)",
+    description: "Timeout (umlčení) na dobu",
     default_member_permissions: "0",
     options: [
       { name: "uživatel", type: 6, required: true, description: "Koho umlčet" },
-      { name: "doba", type: 3, required: true, description: "Např. 30m / 2h / 1d" },
+      { name: "doba", type: 3, required: true, description: "Např. 1d 3h 25m / 2h / 30m" },
       { name: "důvod", type: 3, required: false, description: "Důvod" }
     ]
   },
   {
     name: "tempmute",
-    description: "Alias mute",
+    description: "Alias pro mute (stejné chování)",
     default_member_permissions: "0",
     options: [
       { name: "uživatel", type: 6, required: true, description: "Koho umlčet" },
-      { name: "doba", type: 3, required: true, description: "Např. 30m / 2h / 1d" },
+      { name: "doba", type: 3, required: true, description: "Např. 1d 3h 25m / 2h / 30m" },
       { name: "důvod", type: 3, required: false, description: "Důvod" }
-    ]
-  },
-  {
-    name: "report",
-    description: "Nahlásit uživatele (vidí všichni)",
-    options: [
-      { name: "uživatel", type: 6, required: true, description: "Koho hlásíš" },
-      { name: "důvod", type: 3, required: true, description: "Co provedl" }
     ]
   },
   {
@@ -140,25 +161,40 @@ const commands = [
       { name: "důvod", type: 3, required: true, description: "Důvod varování" }
     ]
   },
+  // Report (vidí všichni)
   {
-    name: "discord",
-    description: "Pošle info embed do kanálu s pravidly/info (předem daný ID)"
-  },
-  {
-    name: "giveaway",
-    description: "Správa giveaway",
+    name: "report",
+    description: "Nahlásit uživatele (vidí všichni)",
     options: [
-      {
-        type: 1, name: "create", description: "Vytvořit novou giveaway (modal)"
-      }
+      { name: "uživatel", type: 6, required: true, description: "Koho hlásíš" },
+      { name: "důvod", type: 3, required: true, description: "Co provedl" }
     ]
   },
+  // Pravidla (role-gate)
+  {
+    name: "pravidla",
+    description: "Pošle embed s pravidly serveru do určeného kanálu",
+    default_member_permissions: "0"
+  },
+  // FAQ (role-gate)
+  {
+    name: "faq",
+    description: "Pošle embed s často kladenými otázkami do určeného kanálu",
+    default_member_permissions: "0"
+  },
+  // Ticket (role-gate)
   {
     name: "ticket",
     description: "Správa ticketů",
-    options: [
-      { type: 1, name: "create", description: "Otevřít ticket někomu ručně (pro support role)" }
-    ]
+    default_member_permissions: "0",
+    options: [{ type: 1, name: "create", description: "Otevřít ticket ručně (pro support role)" }]
+  },
+  // Giveaway (role-gate)
+  {
+    name: "giveaway",
+    description: "Správa giveaway",
+    default_member_permissions: "0",
+    options: [{ type: 1, name: "create", description: "Vytvořit novou giveaway (modal)" }]
   },
 ];
 
@@ -168,9 +204,9 @@ async function registerSlash() {
   console.log("✅ Slash příkazy registrovány");
 }
 
-// ====== STAV „Převzít“ + Giveaway registr ======
+// ====== STAVY ======
 const activeTickets = new Map(); // channelId -> userId
-const runningGiveaways = new Map(); // messageId -> { entrants:Set<string>, endsAt:ms, winners, prize, channelId }
+const runningGiveaways = new Map(); // messageId -> { entrants:Set, endsAt, winners, prize, channelId }
 
 // ====== READY ======
 client.once("ready", async () => {
@@ -185,7 +221,7 @@ client.on("guildMemberAdd", async (m) => {
   if (!ch) return;
   const e = pink()
     .setTitle("👋 Vítej na editorfarcik.eu")
-    .setDescription(`${userMention(m.id)}, díky za připojení!\n\n• Mrkni na pravidla, drž se tématu a buď normální člověk.\n• Potřebuješ edit? Ticket panel je v příslušném kanálu.\n• Když cokoliv, pingni support.`)
+    .setDescription(`${userMention(m.id)}, díky za připojení!\n\n• Mrkni na **#pravidla** a drž se tématu.\n• Potřebuješ edit? Ticket panel je v kanálu <#${TICKET_PANEL_CHANNEL_ID}>.\n• Máš dotaz? Vytvoř si ticket.`)
     .setFooter({ text: "editorfarcik.eu | Vítej" });
   ch.send({ embeds: [e] }).catch(()=>{});
 });
@@ -196,12 +232,12 @@ client.on("messageCreate", async (msg) => {
 
   // !ping
   if (msg.content.trim().toLowerCase() === "!ping") {
-    const sent = await msg.reply("🏓");
-    sent.edit(`🏓 Pong! ${sent.createdTimestamp - msg.createdTimestamp}ms`);
-    return;
+    const m = await msg.reply("🏓");
+    const rtt = m.createdTimestamp - msg.createdTimestamp;
+    return m.edit(`🏓 Pong! ${rtt}ms`);
   }
 
-  // !ticket-panel (jen pro adminy)
+  // !ticket-panel (jen admin)
   if (msg.content.trim().toLowerCase() === "!ticket-panel") {
     if (!msg.member.permissions.has(PermissionsBitField.Flags.Administrator)) return;
     const panelChannel = msg.guild.channels.cache.get(TICKET_PANEL_CHANNEL_ID) || await msg.guild.channels.fetch(TICKET_PANEL_CHANNEL_ID).catch(()=>null);
@@ -235,13 +271,13 @@ client.on("interactionCreate", async (it) => {
     .setCustomId(`ticket_form_${type}`)
     .setTitle("🎫 Nový ticket");
 
-  const name = new TextInputBuilder().setCustomId("name").setLabel("Tvoje jméno nebo přezdívka").setStyle(TextInputStyle.Short).setRequired(true);
+  const name    = new TextInputBuilder().setCustomId("name").setLabel("Tvoje jméno nebo přezdívka").setStyle(TextInputStyle.Short).setRequired(true);
   const contact = new TextInputBuilder().setCustomId("contact").setLabel("Kontakt").setStyle(TextInputStyle.Short).setRequired(true);
   const details = new TextInputBuilder().setCustomId("details").setStyle(TextInputStyle.Paragraph).setRequired(true);
 
-  if (type === "order") { details.setLabel("Popiš, co chceš upravit").setPlaceholder("Např. chci cinematic edit s hudbou a efekty…"); }
-  else if (type === "collab") { details.setLabel("O jakou spolupráci máš zájem?").setPlaceholder("Např. dlouhodobá spolupráce na editech…"); }
-  else { details.setLabel("Popiš, o co jde").setPlaceholder("S čím potřebuješ poradit?"); }
+  if (type === "order")      details.setLabel("Popiš, co chceš upravit").setPlaceholder("Např. cinematic edit s hudbou a efekty…");
+  else if (type === "collab")details.setLabel("O jakou spolupráci máš zájem?").setPlaceholder("Např. dlouhodobá spolupráce na editech…");
+  else                       details.setLabel("Popiš, o co jde").setPlaceholder("S čím potřebuješ poradit?");
 
   modal.addComponents(
     new ActionRowBuilder().addComponents(name),
@@ -259,19 +295,18 @@ client.on("interactionCreate", async (it) => {
   const type = it.customId.replace("ticket_form_", "");
   const guild = it.guild ?? (await client.guilds.fetch(GUILD_ID));
   const category = guild.channels.cache.get(TICKET_CATEGORY_ID) || await guild.channels.fetch(TICKET_CATEGORY_ID).catch(()=>null);
-
   if (!category) return it.reply({ content: "❌ Kategorie pro tickety nenalezena.", ephemeral: true });
-
-  const typeMap = {
-    order: { text: "Objednávka editu", icon: "🎬", slug: "objednavka" },
-    collab: { text: "Spolupráce", icon: "🤝", slug: "spoluprace" },
-    question: { text: "Dotaz / poradenství", icon: "💬", slug: "dotaz" },
-  };
-  const t = typeMap[type] || { text: "Ticket", icon: "🎟️", slug: "ticket" };
 
   const name = it.fields.getTextInputValue("name");
   const contact = it.fields.getTextInputValue("contact");
   const details = it.fields.getTextInputValue("details");
+
+  const map = {
+    order:    { text: "Objednávka editu", icon: "🎬", slug: "objednavka" },
+    collab:   { text: "Spolupráce",       icon: "🤝", slug: "spoluprace" },
+    question: { text: "Dotaz / poradenství", icon: "💬", slug: "dotaz" },
+  };
+  const t = map[type] || { text: "Ticket", icon: "🎟️", slug: "ticket" };
 
   const ch = await guild.channels.create({
     name: `${t.icon}│${t.slug}-${it.user.username}`.toLowerCase(),
@@ -323,26 +358,32 @@ client.on("interactionCreate", async (it) => {
   }
 });
 
-// ====== Support z DM warnu ======
+// ====== DM → „Kontaktovat podporu“ tlačítko z /warn ======
 client.on("interactionCreate", async (it) => {
   if (!it.isButton() || it.customId !== "open_support_from_warn") return;
+
   const guild = await client.guilds.fetch(GUILD_ID);
   const member = await guild.members.fetch(it.user.id).catch(()=>null);
-  const category = guild.channels.cache.get(TICKET_CATEGORY_ID) || await guild.channels.fetch(TICKET_CATEGORY_ID).catch(()=>null);
+  const category = guild.channels.cache.get(WARN_PRIVATE_CATEGORY_ID) || await guild.channels.fetch(WARN_PRIVATE_CATEGORY_ID).catch(()=>null);
   if (!member || !category) return it.reply({ content: "❌ Nelze vytvořit ticket.", ephemeral: true });
 
   const ch = await guild.channels.create({
-    name: `⚠│varovani-${it.user.username}`.toLowerCase(),
+    name: "│・📩│podpora",
     type: ChannelType.GuildText,
     parent: category.id,
     permissionOverwrites: [
       { id: guild.roles.everyone, deny: [PermissionsBitField.Flags.ViewChannel] },
       { id: it.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] },
       ...SUPPORT_ROLES.map(rid => ({ id: rid, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] })),
+      { id: client.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages] },
     ],
   });
 
-  await ch.send({ content: `<@${it.user.id}>`, embeds: [pink().setTitle("📨 Ticket z varování").setDescription("Napiš prosím, co potřebuješ k varování doplnit/řešit.").setFooter({ text: "editorfarcik.eu | Podpora ticketu" })] });
+  await ch.send({
+    content: `<@${it.user.id}>`,
+    embeds: [pink().setTitle("📨 Ticket z varování").setDescription("Napiš prosím, co potřebuješ k varování dořešit.").setFooter({ text: "editorfarcik.eu | Podpora ticketu" })]
+  });
+
   await it.reply({ content: `✅ Otevřel jsem ticket: ${ch}`, ephemeral: true });
 });
 
@@ -350,41 +391,85 @@ client.on("interactionCreate", async (it) => {
 client.on("interactionCreate", async (it) => {
   if (!it.isChatInputCommand()) return;
 
-  // role gate helper
-  const needSupport = () => {
-    if (!hasSomeRole(it.member, SUPPORT_ROLES)) {
-      it.reply({ content: "❌ Nemáš oprávnění pro tento příkaz.", ephemeral: true });
-      return false;
-    }
-    return true;
-  };
+  const isSupportCmd = ["ban","tempban","kick","mute","tempmute","warn","ticket","giveaway","pravidla","faq"].includes(it.commandName);
+  if (isSupportCmd && !hasSomeRole(it.member, SUPPORT_ROLES)) {
+    return it.reply({ content: "❌ Nemáš oprávnění pro tento příkaz.", ephemeral: true });
+  }
 
-  // ----- /discord
-  if (it.commandName === "discord") {
-    const guild = it.guild;
-    const ch = guild.channels.cache.get(DISCORD_INFO_CHANNEL_ID) || await guild.channels.fetch(DISCORD_INFO_CHANNEL_ID).catch(()=>null);
-    if (!ch) return it.reply({ content: "❌ Info kanál nenalezen.", ephemeral: true });
+  // ----- /pravidla (přesně text + auto reakce)
+  if (it.commandName === "pravidla") {
+    const ch = it.guild.channels.cache.get(RULES_CHANNEL_ID) || await it.guild.channels.fetch(RULES_CHANNEL_ID).catch(()=>null);
+    if (!ch) return it.reply({ content: "❌ Kanál s pravidly nenalezen.", ephemeral: true });
 
     const e = pink()
       .setTitle("📜 Pravidla serveru editorfarcik.eu")
       .setDescription([
-        "Vítej v **editorfarcik.eu**! Prosím všechny o dodržování pravidel. *Neznalost neomlouvá!*",
+        "Vítej v **editorfarcik.eu!** Prosím všechny o dodržování všech těchto pravidel.",
+        "**Neznalost pravidel neomlouvá!**",
         "",
-        "I. 🚫 **Žádný spam/flood**",
-        "II. 👑 **Žádné urážky/rasismus/toxic**",
-        "III. 📢 **Zákaz reklamy**",
+        "I. 🚫 **Žádný spam nebo flood**",
+        "• Neposílej opakovaně stejnou zprávu nebo zbytečné reakce/emotikony.",
+        "",
+        "II. 👑 **Žádné urážky, rasismus nebo toxické chování**",
+        "• Buď respektující vůči ostatním, žádný hate, homofobie ani urážky.",
+        "",
+        "III. 📢 **Zákaz reklamy a propagace**",
+        "• Nešiř své servery, odkazy nebo sociální sítě bez povolení.",
+        "",
         "IV. 🛡 **Respektuj moderátory**",
-        "V. ✅ **Vhodný obsah (bez NSFW/virů)**",
-        "VI. 🔒 **Zákaz podvodů**",
+        "• Rozhodnutí adminů a moderátorů jsou finální. Nepokoušej se je obejít.",
+        "",
+        "V. ✅ **Vhodný obsah**",
+        "• Žádný NSFW obsah, viry, exploity ani cokoliv nelegálního.",
+        "",
+        "VI. 🔒 **Zákaz podvodů (scamování)**",
+        "• Jakýkoliv pokus o podvod vede k okamžitému banu.",
+        "",
         "VII. 📏 **Dodržuj pravidla Discordu**",
+        "• Discord ToS • Pravidla komunity Discordu",
+        "",
+        "Porušením pravidel riskuješ mute, kick nebo ban – i bez předchozího varování."
       ].join("\n"))
       .setFooter({ text: "editorfarcik.eu | Pravidla serveru" });
 
-    await ch.send({ embeds: [e] });
-    return it.reply({ content: "✅ Odesláno.", ephemeral: true });
+    const sent = await ch.send({ embeds: [e] });
+    await sent.react(RULES_REACT_EMOJI).catch(()=>{});
+    return it.reply({ content: "✅ Pravidla odeslána + přidána reakce.", ephemeral: true });
   }
 
-  // ----- /report (vidí všichni)
+  // ----- /faq (poslat do FAQ channelu)
+  if (it.commandName === "faq") {
+    const faqChannel = it.guild.channels.cache.get(FAQ_CHANNEL_ID) || await it.guild.channels.fetch(FAQ_CHANNEL_ID).catch(()=>null);
+    if (!faqChannel) return it.reply({ content: "❌ FAQ kanál nenalezen.", ephemeral: true });
+
+    const faqEmbed = pink()
+      .setTitle("❓ Často kladené otázky")
+      .setDescription([
+        "**Kolik střih videa stojí?**",
+        "Cena není fixní. Záleží na délce videa, stylu efektů, náročnosti a deadline. Pošleš ukázku videa + styl, řeknu cenu.",
+        "",
+        "**Jak dlouho střih videa zabere?**",
+        "Standardně 1–7 dní podle náročnosti. Rychlejší termíny jdou, ale platí se příplatek. (z důvodu studování)",
+        "",
+        "**V jakém formátu odevzdáváš?**",
+        "MP4 (H.264/H.265), 1080p/4K podle domluvy. Vše optimalizované pro platformu.",
+        "",
+        "**Děláš i thumbnaily/miniatury?**",
+        "Ano, ale je to extra položka za menší příplatek.",
+        "",
+        "**Způsob platby?**",
+        "Převodem na bankovní účet.",
+        "",
+        "**Co když se mi to nelíbí?**",
+        "Řekneš mi přesně co se ti nelíbí a já to upravím podle tvých představ."
+      ].join("\n"))
+      .setFooter({ text: "editorfarcik.eu | FAQ" });
+
+    await faqChannel.send({ embeds: [faqEmbed] });
+    return it.reply({ content: "✅ FAQ odesláno do určeného kanálu.", ephemeral: true });
+  }
+
+  // ----- /report (vidí všichni, log do modlogu)
   if (it.commandName === "report") {
     const user = it.options.getUser("uživatel", true);
     const reason = it.options.getString("důvod", true);
@@ -392,38 +477,32 @@ client.on("interactionCreate", async (it) => {
       .setTitle("🚨 Report")
       .setDescription(`**Nahlásil:** ${it.user}\n**Nahlášený:** ${user}\n**Důvod:** ${reason}\n**Čas:** ${time(Math.floor(Date.now()/1000))}`)
       .setFooter({ text: "editorfarcik.eu | Moderace systému" });
-    await logEmbed(it.guild, emb);
+    await sendToModlog(it.guild, emb);
     return it.reply({ content: "✅ Díky, nahlášení jsme přijali.", ephemeral: true });
   }
 
-  // ----- role-gated odtud dál
-  if (["ban","tempban","kick","mute","tempmute","warn","ticket","giveaway"].includes(it.commandName)) {
-    if (!needSupport()) return;
-  }
-
+  // ----- Moderace (role-gate výše)
   if (it.commandName === "warn") {
     const user = it.options.getUser("uživatel", true);
     const reason = it.options.getString("důvod", true);
 
-    // DM
+    // DM warn + tlačítko
     try {
-      const dm = pink()
+      const dmEmbed = pink()
         .setTitle("⚠️ Varování")
         .setDescription(`Byl jsi varován na serveru **editorfarcik.eu**.\n**Důvod:** ${reason}`)
         .setFooter({ text: "editorfarcik.eu | Podpora varování" });
       const row = new ActionRowBuilder().addComponents(
-        new ButtonBuilder().setCustomId("open_support_from_warn").setStyle(ButtonStyle.Primary).setLabel("Kontaktovat podporu")
+        new ButtonBuilder().setCustomId("open_support_from_warn").setStyle(ButtonStyle.Primary).setLabel("📩 Kontaktovat podporu")
       );
       const u = await client.users.fetch(user.id);
-      await u.send({ embeds: [dm], components: [row] }).catch(()=>{});
+      await u.send({ embeds: [dmEmbed], components: [row] }).catch(()=>{});
     } catch {}
 
-    // Log
-    const emb = pink()
-      .setTitle("⚠️ Varování uděleno")
+    const log = pink().setTitle("⚠️ Varování uděleno")
       .setDescription(`**Moderátor:** ${it.user}\n**Uživatel:** ${user}\n**Důvod:** ${reason}`)
       .setFooter({ text: "editorfarcik.eu | Moderace systému" });
-    await logEmbed(it.guild, emb);
+    await sendToModlog(it.guild, log);
     return it.reply({ content: "✅ Upozornění odesláno a zalogováno.", ephemeral: true });
   }
 
@@ -432,31 +511,27 @@ client.on("interactionCreate", async (it) => {
     const reason = it.options.getString("důvod") || "Neuvedeno";
     const member = await it.guild.members.fetch(user.id).catch(()=>null);
     if (!member) return it.reply({ content: "❌ Uživatel není na serveru.", ephemeral: true });
-    await member.ban({ reason }).catch(e=>it.reply({ content:`❌ Nepovedlo se: ${e?.message||e}`, ephemeral:true}));
-    const emb = pink().setTitle("🔨 Ban").setDescription(`**Moderátor:** ${it.user}\n**Uživatel:** ${user}\n**Důvod:** ${reason}`).setFooter({ text:"editorfarcik.eu | Moderace systému" });
-    await logEmbed(it.guild, emb);
+    await member.ban({ reason }).catch(e=> it.reply({ content: `❌ Nepovedlo se: ${e?.message||e}`, ephemeral:true }));
+    await sendToModlog(it.guild, pink().setTitle("🔨 Ban").setDescription(`**Moderátor:** ${it.user}\n**Uživatel:** ${user}\n**Důvod:** ${reason}`).setFooter({ text:"editorfarcik.eu | Moderace systému" }));
     return it.reply({ content: "✅ Zabanován.", ephemeral: true });
   }
 
   if (it.commandName === "tempban") {
     const user = it.options.getUser("uživatel", true);
-    const durStr = it.options.getString("doba", true);
     const reason = it.options.getString("důvod") || "Neuvedeno";
-    const ms = parseDuration(durStr);
-    if (!ms) return it.reply({ content: "❌ Špatný formát doby. Použij např. `30m`, `2h`, `1d`.", ephemeral: true });
+    const durStr = it.options.getString("doba", true);
+    const ms = parseCompoundDuration(durStr);
+    if (!ms) return it.reply({ content: "❌ Špatný formát doby. Použij např. `1d 3h 25m`, `2h`, `30m`.", ephemeral: true });
 
     const member = await it.guild.members.fetch(user.id).catch(()=>null);
     if (!member) return it.reply({ content: "❌ Uživatel není na serveru.", ephemeral: true });
-    await member.ban({ reason }).catch(e=>it.reply({ content:`❌ Nepovedlo se: ${e?.message||e}`, ephemeral:true}));
+    await member.ban({ reason }).catch(e=> it.reply({ content: `❌ Nepovedlo se: ${e?.message||e}`, ephemeral:true }));
 
     setTimeout(async () => {
       await it.guild.members.unban(user.id, "Vypršel tempban").catch(()=>{});
     }, ms);
 
-    const emb = pink().setTitle("⏳ Tempban")
-      .setDescription(`**Moderátor:** ${it.user}\n**Uživatel:** ${user}\n**Doba:** ${fmtMs(ms)}\n**Důvod:** ${reason}`)
-      .setFooter({ text:"editorfarcik.eu | Moderace systému" });
-    await logEmbed(it.guild, emb);
+    await sendToModlog(it.guild, pink().setTitle("⏳ Tempban").setDescription(`**Moderátor:** ${it.user}\n**Uživatel:** ${user}\n**Doba:** ${fmtMs(ms)}\n**Důvod:** ${reason}`).setFooter({ text:"editorfarcik.eu | Moderace systému" }));
     return it.reply({ content: "✅ Dočasný ban udělen.", ephemeral: true });
   }
 
@@ -465,35 +540,31 @@ client.on("interactionCreate", async (it) => {
     const reason = it.options.getString("důvod") || "Neuvedeno";
     const member = await it.guild.members.fetch(user.id).catch(()=>null);
     if (!member) return it.reply({ content: "❌ Uživatel není na serveru.", ephemeral: true });
-    await member.kick(reason).catch(e=>it.reply({ content:`❌ Nepovedlo se: ${e?.message||e}`, ephemeral:true}));
-    const emb = pink().setTitle("🥾 Kick").setDescription(`**Moderátor:** ${it.user}\n**Uživatel:** ${user}\n**Důvod:** ${reason}`).setFooter({ text:"editorfarcik.eu | Moderace systému" });
-    await logEmbed(it.guild, emb);
+    await member.kick(reason).catch(e=> it.reply({ content: `❌ Nepovedlo se: ${e?.message||e}`, ephemeral:true }));
+    await sendToModlog(it.guild, pink().setTitle("🥾 Kick").setDescription(`**Moderátor:** ${it.user}\n**Uživatel:** ${user}\n**Důvod:** ${reason}`).setFooter({ text:"editorfarcik.eu | Moderace systému" }));
     return it.reply({ content: "✅ Vyhozen.", ephemeral: true });
   }
 
   if (it.commandName === "mute" || it.commandName === "tempmute") {
     const user = it.options.getUser("uživatel", true);
-    const durStr = it.options.getString("doba", true);
     const reason = it.options.getString("důvod") || "Neuvedeno";
-    const ms = parseDuration(durStr);
-    if (!ms) return it.reply({ content: "❌ Špatný formát doby. `30m`, `2h`, `1d`…", ephemeral: true });
+    const durStr = it.options.getString("doba", true);
+    const ms = parseCompoundDuration(durStr);
+    if (!ms) return it.reply({ content: "❌ Špatný formát doby. Použij `1d 3h 25m` / `2h` / `30m`…", ephemeral: true });
 
     const member = await it.guild.members.fetch(user.id).catch(()=>null);
     if (!member) return it.reply({ content: "❌ Uživatel není na serveru.", ephemeral: true });
+    await member.timeout(ms, reason).catch(e=> it.reply({ content: `❌ Nepovedlo se: ${e?.message||e}`, ephemeral:true }));
 
-    await member.timeout(ms, reason).catch(e=>it.reply({ content:`❌ Nepovedlo se: ${e?.message||e}`, ephemeral:true}));
-
-    const emb = pink().setTitle("🔇 Timeout")
-      .setDescription(`**Moderátor:** ${it.user}\n**Uživatel:** ${user}\n**Doba:** ${fmtMs(ms)}\n**Důvod:** ${reason}`)
-      .setFooter({ text:"editorfarcik.eu | Moderace systému" });
-    await logEmbed(it.guild, emb);
+    await sendToModlog(it.guild, pink().setTitle("🔇 Timeout").setDescription(`**Moderátor:** ${it.user}\n**Uživatel:** ${user}\n**Doba:** ${fmtMs(ms)}\n**Důvod:** ${reason}`).setFooter({ text:"editorfarcik.eu | Moderace systému" }));
     return it.reply({ content: "✅ Timeout nastaven.", ephemeral: true });
   }
 
+  // ----- /ticket create
   if (it.commandName === "ticket" && it.options.getSubcommand() === "create") {
-    // jen support role
     const category = it.guild.channels.cache.get(TICKET_CATEGORY_ID) || await it.guild.channels.fetch(TICKET_CATEGORY_ID).catch(()=>null);
     if (!category) return it.reply({ content: "❌ Kategorie nenalezena.", ephemeral: true });
+
     const ch = await it.guild.channels.create({
       name: `🎟│ticket-${it.user.username}`.toLowerCase(),
       type: ChannelType.GuildText,
@@ -508,12 +579,13 @@ client.on("interactionCreate", async (it) => {
     return it.reply({ content: `✅ Ticket: ${ch}`, ephemeral: true });
   }
 
+  // ----- /giveaway create (modal)
   if (it.commandName === "giveaway" && it.options.getSubcommand() === "create") {
-    // otevři modal
     const modal = new ModalBuilder().setCustomId("gw_create_modal").setTitle("🎉 Vytvořit giveaway");
-    const prize = new TextInputBuilder().setCustomId("gw_prize").setLabel("Co se vyhrává?").setRequired(true).setStyle(TextInputStyle.Short);
-    const winners = new TextInputBuilder().setCustomId("gw_winners").setLabel("Počet výherců").setRequired(true).setStyle(TextInputStyle.Short).setPlaceholder("např. 1");
-    const duration = new TextInputBuilder().setCustomId("gw_duration").setLabel("Doba trvání").setRequired(true).setStyle(TextInputStyle.Short).setPlaceholder("např. 1h / 30m / 45s");
+    const prize    = new TextInputBuilder().setCustomId("gw_prize").setLabel("Co se vyhrává?").setRequired(true).setStyle(TextInputStyle.Short);
+    const winners  = new TextInputBuilder().setCustomId("gw_winners").setLabel("Počet výherců").setRequired(true).setStyle(TextInputStyle.Short).setPlaceholder("např. 1");
+    const duration = new TextInputBuilder().setCustomId("gw_duration").setLabel("Doba trvání").setRequired(true).setStyle(TextInputStyle.Short).setPlaceholder("např. 1d 3h 25m / 2h / 30m");
+
     modal.addComponents(
       new ActionRowBuilder().addComponents(prize),
       new ActionRowBuilder().addComponents(winners),
@@ -530,8 +602,8 @@ client.on("interactionCreate", async (it) => {
   const prize = it.fields.getTextInputValue("gw_prize");
   const winnersCount = Math.max(1, parseInt(it.fields.getTextInputValue("gw_winners") || "1", 10));
   const durStr = it.fields.getTextInputValue("gw_duration");
-  const ms = parseDuration(durStr);
-  if (!ms) return it.reply({ content: "❌ Špatný formát doby. Použij `30m`, `2h`, `1d`…", ephemeral: true });
+  const ms = parseCompoundDuration(durStr);
+  if (!ms) return it.reply({ content: "❌ Špatný formát doby. Použij `1d 3h 25m`, `2h`, `30m`…", ephemeral: true });
 
   const ends = Date.now() + ms;
   const joinBtn = new ButtonBuilder().setCustomId("gw_join").setLabel("🎉 Přihlásit se").setStyle(ButtonStyle.Success);
@@ -541,9 +613,10 @@ client.on("interactionCreate", async (it) => {
       `**Cena:** ${prize}`,
       `**Počet výherců:** ${winnersCount}`,
       `**Končí:** ${time(Math.floor(ends/1000), "R")}`,
+      `👥 **Počet účastníků:** 0`,
       `\nRole s větší šancí: ${BONUS_ROLES.map(roleMention).join(", ")} (2×)`,
     ].join("\n"))
-    .setFooter({ text: "editorfarcik.eu | Moderace systému" });
+    .setFooter({ text: "editorfarcik.eu | Giveaway" });
 
   const msg = await it.channel.send({ embeds: [e], components: [new ActionRowBuilder().addComponents(joinBtn)] });
   runningGiveaways.set(msg.id, { entrants: new Set(), endsAt: ends, winners: winnersCount, prize, channelId: msg.channel.id });
@@ -551,25 +624,21 @@ client.on("interactionCreate", async (it) => {
   setTimeout(async () => {
     const gw = runningGiveaways.get(msg.id);
     if (!gw) return;
-    // posbíráme členy
-    const channel = await client.channels.fetch(gw.channelId).catch(()=>null);
-    if (!channel) return;
-    const entries = [...gw.entrants];
 
-    if (entries.length === 0) {
-      await msg.reply({ embeds: [pink().setTitle("🎉 Giveaway").setDescription("Nikdo se nepřihlásil.").setFooter({ text:"editorfarcik.eu | Moderace systému" })] });
+    const entries = [...gw.entrants];
+    if (!entries.length) {
+      await msg.reply({ embeds: [pink().setTitle("🎉 Giveaway").setDescription("Nikdo se nepřihlásil.").setFooter({ text:"editorfarcik.eu | Giveaway" })] });
       runningGiveaways.delete(msg.id);
       return;
     }
 
-    // vážený výběr
     const guild = await client.guilds.fetch(GUILD_ID);
     const weighted = [];
     for (const id of entries) {
       const m = await guild.members.fetch(id).catch(()=>null);
       if (!m) continue;
       weighted.push(id);
-      if (hasSomeRole(m, BONUS_ROLES)) weighted.push(id); // 2x šance
+      if (hasSomeRole(m, BONUS_ROLES)) weighted.push(id); // 2× šance
     }
 
     const winners = [];
@@ -579,7 +648,7 @@ client.on("interactionCreate", async (it) => {
     }
 
     const wText = winners.length ? winners.map(userMention).join(", ") : "nikdo";
-    await msg.reply({ embeds: [pink().setTitle("🎉 Výsledky").setDescription(`**Výhra:** ${gw.prize}\n**Výherci:** ${wText}`).setFooter({ text:"editorfarcik.eu | Moderace systému" })] });
+    await msg.reply({ embeds: [pink().setTitle("🥳 Výherci").setDescription(`**Výhra:** ${gw.prize}\n**Výherci:** ${wText}`).setFooter({ text:"editorfarcik.eu | Giveaway" })] });
     runningGiveaways.delete(msg.id);
   }, ms);
 
@@ -591,8 +660,23 @@ client.on("interactionCreate", async (it) => {
   if (!it.isButton() || it.customId !== "gw_join") return;
   const gw = runningGiveaways.get(it.message.id);
   if (!gw) return it.reply({ content: "❌ Tahle giveaway už neexistuje.", ephemeral: true });
+
+  if (gw.entrants.has(it.user.id)) {
+    return it.reply({ content: "⚠️ Už jsi přihlášen do této giveaway.", ephemeral: true });
+  }
   gw.entrants.add(it.user.id);
-  return it.reply({ content: "✅ Jsi v osudí!", ephemeral: true });
+
+  // aktualizuj počet účastníků v embedu
+  const old = it.message.embeds?.[0];
+  if (old) {
+    const emb = EmbedBuilder.from(old);
+    const desc = emb.data.description || "";
+    const updated = desc.replace(/Počet účastníků:\s*\d+/i, `Počet účastníků: ${gw.entrants.size}`);
+    emb.setDescription(updated);
+    await it.message.edit({ embeds: [emb] }).catch(()=>{});
+  }
+
+  return it.reply({ content: "🎉 Byl jsi úspěšně přihlášen do giveaway!", ephemeral: true });
 });
 
 // ====== START ======
